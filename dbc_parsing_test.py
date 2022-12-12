@@ -2,16 +2,44 @@ import cantools
 import csv
 import pandas as pd
 from datetime import datetime
-db = cantools.database.load_file('20200701_RMS_PM_CAN_DB.dbc')
-dbc_ids = []
-for message in db.messages:
-    #print(str(vars(message)) + "\n")
-    dbc_ids.append(message.frame_id)
-    print(str(message.name)+" "+str(message.frame_id)+" "+str(message.comment))
-    print("\tsignals: ")
-    for signal in message.signals:
-        print("\t\t"+ signal.name)
+import glob
+import os
+import sys
+def get_dbc_files():
+    try:
+        path_name = './'
+        file_path = []
+        file_count = 0
+        for root, dirs, files in os.walk(path_name, topdown=False):
+            for name in files:
+                if ".dbc" in name or ".DBC" in name:
+                    fp = os.path.join(root, name)
+                    file_path.append(fp)
+                    file_count += 1
+    except:
+        print('FATAL ERROR: Process failed at step 1.')
+        sys.exit(0)
+    mega_dbc=cantools.database.Database()
+    for filename in file_path:
+        with open (filename, 'r') as newdbc:
+            mega_dbc.add_dbc(newdbc)
 
+    print('Step 1: found ' + str(file_count) + ' files in the DBC files folder')
+    return mega_dbc
+print(get_dbc_files())
+#db = cantools.database.load_file('20200701_RMS_PM_CAN_DB.dbc')
+
+def print_all_the_shit_in_dbc_file(db):
+    dbc_ids=[]
+    for message in db.messages:
+        #print(str(vars(message)) + "\n")
+        dbc_ids.append(message.frame_id)
+        print(str(message.name)+" ID: "+str(message.frame_id)+" Note: "+str(message.comment))
+        print("\tsignals: ")
+        for signal in message.signals:
+            print("\t\t"+ signal.name)
+            header_list.append(signal.name)
+    return dbc_ids
 def parse_time(raw_time):
     '''
     @brief: Converts raw time into human-readable time.
@@ -24,81 +52,112 @@ def parse_time(raw_time):
     time = time + "." + str(ms).zfill(3) + "Z"
     return time
 
-def parse_message(id, data):
+def parse_message_better(id, data, db,dbc_ids):
+    if int(id,16) in dbc_ids:
+        parsed_message = db.decode_message(int(id,16),bytearray.fromhex(data))
+        return parsed_message
+    if (id not in unknown_ids) & (int(id,16) not in dbc_ids):
+        unknown_ids.append(raw_id)
+    return "INVALID_ID"
+
+def parse_message(id, data, db,dbc_ids):
     labels=[]
     values=[]
     units=[]
-    print("Raw ID: "+str(raw_id)+ " Raw DATA: "+str(raw_data))
-    for i in dbc_ids:
-        if int(id,16)==i:
-            actual_message = db.get_message_by_frame_id(int(id,16))
-            for signal in actual_message.signals:
-                units.append(str(signal.unit))
-            parsed_message = db.decode_message(int(id,16),bytes(data,'utf-8'))
-            parsed_data = actual_message.decode(bytes(data,'utf-8'))
-            print(parsed_data)
-            print("The parsed message: "+ str(parsed_message))
-            for i in parsed_message:
-                # print(str(i)+" "+str(parsed_message[i]))
-                message_label = str(i)
-                # print("Label: " +message_label)
-                labels.append(message_label)
-                values.append(str(parsed_message[i]))
-            message_name = actual_message.name
-            #return(parsed_message)
-            # print("Name "+ message_name)
-            # print("Labels " + str(labels))
-            # print(values)
-            # print(units)
-            return [message_name,labels,values,units]
+    if int(id,16) in dbc_ids:
+        actual_message = db.get_message_by_frame_id(int(id,16))
+        for signal in actual_message.signals:
+            units.append(str(signal.unit))
+        parsed_message = db.decode_message(int(id,16),bytearray.fromhex(data))
+        for i in parsed_message:
+            message_label = str(i)
+            labels.append(message_label)
+            values.append(str(parsed_message[i]))
+        message_name = actual_message.name
+        return [message_name,labels,values,units]
+    if (id not in unknown_ids) & (int(id,16) not in dbc_ids):
+        unknown_ids.append(raw_id)
     return "INVALID_ID"
-    
-raw_id = "C0"
-raw_data = "0000000001000000"
-print(parse_message(raw_id,raw_data))
-print("Parsing it straight up with the decode function: ")
-print(bytes(raw_data,'utf-8'))
-print(db.decode_message(int(raw_id,16),b(bytes(raw_data,'utf-8'))))
+header_list = ["Time"]
+unknown_ids = []
+dbc_for_parsing = get_dbc_files()
+dbc_ids = print_all_the_shit_in_dbc_file(dbc_for_parsing)
+nextline = [""] * len(header_list)
+header_string=",".join(header_list)
+infile = open('data0051.csv',"r")
+header_list = ["Time"]
 
-# infile = open('data0002.csv',"r")
-# outfile = open('data0002test.csv',"w")
-# flag_first_line = True
-# for line in infile.readlines():
-#     # On the first line, do not try to parse. Instead, set up the CSV headers.
-#     if flag_first_line:
-#         flag_first_line = False
-#         outfile.write("time,id,message,label,value,unit\n")
+outfile2 = open('test_new_parsing_scheme_data5.csv','w')
+flag_first_line = True
+flag_second_line = True
+print("Beginning parsing")
+last_time = ''
+for line in infile.readlines():
+    if flag_first_line:
+        flag_first_line = False
+    else:
+        raw_time = line.split(",")[0]
+        raw_id = line.split(",")[1]
+        length = line.split(",")[2]
+        raw_message = line.split(",")[3]
+        if length == 0 or raw_message == "\n":
+            continue
+        raw_message = raw_message[:(int(length) * 2)] # Strip trailing end of line/file characters that may cause bad parsing
+        raw_message = raw_message.zfill(16) # Sometimes messages come truncated if 0s on the left. Append 0s so field-width is 16.
+        current_message = parse_message_better(raw_id,raw_message,dbc_for_parsing,dbc_ids)
+        if current_message != "INVALID_ID":
+            for i in current_message:
+                if i not in header_list:
+                    header_list.append(i)
+nextline = [""] * len(header_list)
+print(nextline)
+flag_first_line = True
+print(header_list)
+infile = open('data0051.csv',"r")
+for linee in infile.readlines():
+    # On the first line, do not try to parse. Instead, set up the CSV headers.
+    if flag_first_line:
+        flag_first_line = False
+        header_string=",".join(header_list)
+        outfile2.write(header_string+"\n")
 
-#     # Otherwise attempt to parse the line.
-#     else:
-#         raw_time = line.split(",")[0]
-#         raw_id = line.split(",")[1]
-#         length = line.split(",")[2]
-#         raw_message = line.split(",")[3]
-#         # Do not parse if the length of the message is 0, otherwise bugs will occur later.
-#         if length == 0 or raw_message == "\n":
-#             continue
+    # Otherwise attempt to parse the line.
+    else:
         
-#         # Call helper functions
-#         time = parse_time(raw_time)
-#         raw_message = raw_message[:(int(length) * 2)] # Strip trailing end of line/file characters that may cause bad parsing
-#         raw_message = raw_message.zfill(16) # Sometimes messages come truncated if 0s on the left. Append 0s so field-width is 16.
-#         table = parse_message(raw_id, raw_message)
-#         if table == "INVALID_ID" or table == "UNPARSEABLE":
-#             continue
-
-#         # Assertions that check for parser failure. Notifies user on where parser broke.
-#         assert len(table) == 4, "FATAL ERROR: Parser expected 4 arguments from parse_message at ID: 0x" + table[0] + ", got: " + str(len(table))
-#         assert len(table[1]) == len (table[2]) and len(table[1]) == len(table[3]), "FATAL ERROR: Label, Data, or Unit numbers mismatch for ID: 0x" + raw_id
+        raw_time = linee.split(",")[0]
+        raw_id = linee.split(",")[1]
+        length = linee.split(",")[2]
+        raw_message = linee.split(",")[3]
         
-#         # Harvest parsed datafields and write to outfile.
-#         message = table[0].strip()
-#         for i in range(len(table[1])):
-#             label = table[1][i].strip()
-#             value = str(table[2][i]).strip()
-#             unit = table[3][i].strip()
+        # Do not parse if the length of the message is 0, otherwise bugs will occur later.
+        if length == 0 or raw_message == "\n":
+            continue
+        
+        # Call helper functions
+        time = parse_time(raw_time)
+        raw_message = raw_message[:(int(length) * 2)] # Strip trailing end of line/file characters that may cause bad parsing
+        raw_message = raw_message.zfill(16) # Sometimes messages come truncated if 0s on the left. Append 0s so field-width is 16.
+        current_message = parse_message_better(raw_id,raw_message,dbc_for_parsing,dbc_ids)
+        if current_message != "INVALID_ID":
+            for i in current_message:
+                nextline[header_list.index(str(i))]=str(current_message[i])
+        if time == last_time:
+            continue
+        elif flag_second_line==True:
+            flag_second_line = False
+            print("Second Line")
+            continue
+        elif time != last_time:
+            # write our line to file
+            # clear it out and begin putting new values in it
+            print(nextline)
+            last_time = time
+            nextline[header_list.index("Time")]=raw_time
+            outfile2.write(",".join(nextline) + "\n")
+            nextline = [""] * len(header_list)
 
-#             outfile.write(time + ",0x" + raw_id + "," + message + "," + label + "," + value + "," + unit + "\n")
-
-# infile.close()
-# outfile.close()
+infile.close()
+outfile2.close()
+print("parsing done")
+print("These IDs not found in DBC: " +str(unknown_ids))
+print(header_list)
